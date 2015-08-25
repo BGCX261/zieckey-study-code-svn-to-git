@@ -1,0 +1,196 @@
+
+
+2009.2.25
+
+遇到的难题、困难、疑难
+
+在多线程的环境下，一定要注意保护关键区域。
+关键区域包含内存、IO等
+
+例如，今天的这个tcp长连接程序中，
+主线程处理业务逻辑，子线程发送心跳包，这两个线程都是调用同一个socket的send和recv方法，
+send、recv都是IO操作，如果不注意保护的话，就会出现意想不到的错误(core dump)。
+
+
+
+
+2009.2.26
+遇到的难题、困难、疑难
+
+socket在send时程序自动退出是怎么回事啊，急！
+
+serv发送消息，当client收到消息包后，业务处理完毕，发送返回消息（但在serv发送消息后，马上停掉serv端），发现client端的程序就退出了，我跟踪了一下，如下： 只看到了OK，没有看到OK1，不知道大家有没有碰到过，给怎么办啊
+
+client端：
+
+printf("ok\n");
+send(_gSockId,&ans_cz,sizeof(Ans_CZ_Pack),0);
+printf("ok1\n");
+
+用户1
+
+可能是收到了信号，捕捉一下就知道了
+
+用户1
+
+楼上的，能说的详细点吗，怎么捕捉啊
+
+用户1
+
+你捕获一下SIGPIPE信号
+signal(SIGPIPE,func);
+func是你的信号捕获函数
+
+用户1
+
+此时的 sockid 也许已经无效了，你可以
+read 一下查看是否有数据可读，如有，则 sockid  已经无效了。
+
+用户1
+
+就是sigpipe。做一下对信号的处理。
+
+用户1
+
+sigpipe会让程序退出吗？
+信号处理完不继续printf("ok1\n");?
+
+用户1
+
+应该有core文件生成吧，从这里入手去查
+
+
+
+
+
+
+
+【Linux: 异常处理】
+当连接断开，还发数据的时候，不仅send()的返回值会有反映，而且还会像系统发送一个异常消息，如果不作处理，系统会出BrokePipe，程序会退出。为此，send()函数的最后一个参数可以设MSG_NOSIGNAL，禁止send()函数向系统发送异常消息。
+
+
+
+
+2009.3.3
+
+遇到的难题、困难、疑难
+
+epoll问题：
+
+thread1 调用 epoll_wait
+int CTEPoll::wait(struct epoll_event * events, unsigned int maxevents, unsigned int timeout)
+{
+	int retv = -1;
+	locker.lock();
+	retv = epoll_wait(m_epfd, events, maxevents, timeout);
+	locker.unlock();
+	//usleep(timeout * 100);//if no delay, other thread will always blocked at this locker.
+	return retv;
+}
+
+thread2 调用 epoll_ctl
+int CTEPoll::ctl(int op, int fd, struct epoll_event *event)
+{
+	int retv = -1;
+	locker.lock();
+	retv = epoll_ctl(m_epfd, op, fd, event);
+	locker.unlock();
+	return retv;
+}
+
+thread2有时候会始终阻塞在 locker.lock(); 这里。。。，
+因为thread1线程还没有来得及切换到thread2，，thread1又locker了这个mutex
+这个时候thread2继续阻塞。。
+
+
+
+
+
+
+
+
+2009.3.13
+tcp连接，send函数发送数据，如果参数len=0，其返回值也是0，而client端接收不到这个消息。
+
+
+
+
+
+
+
+
+
+
+2009.3.18
+tcp服务器在多个client连接的时候，始终只为一个大数据量的连接服务，而另一个小数据量的连接几乎得不到服务，
+找了好多原因，最好发现服务器printf的问题，注释掉打印大数据量那条语句就没有问题了。
+
+至于为什么printf的会引起这个原因，可能是因为
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+2009.6 10038 错误（winsock) Socket operation on nonsocket. 
+
+
+我们摒弃了CURL的同步调用机制，自己使用 select I/O 接管了 CURL 收发数据的管理。具体上有一个 CURLService 调度线程（线程池）， 里面有若干 CURLWorkThread 工作线程，每一个CURL任务都实例化一个 CURLWork 工作任务放入线程池工作。
+
+开始的时候，调用 curl_multi_socket_action 会建立一个 socket(fd)，
+curl_multi_socket_action 函数返回前会调用我们自己的 sock_cb 回调函数，
+我们在 sock_cb 中就可以取得刚建立好的 socket(fd)。然后将这个 socket(fd) 与之对应的 CURLWork 建立关系管理起来。
+然后在 CURLService 调度线程里做 select 调度，从而实现了 CURL 的异步调用。
+
+开始的时候还可以正常工作，后来，却出现了 10038 错误（winsock，）MSDN上 10038 错误的说明：
+Socket operation on nonsocket. 
+An operation was attempted on something that is not a socket. Either the socket handle parameter did not reference a valid socket, or for select, a member of an fd_set was not valid.
+
+经过调试可以排除 “for select, a member of an fd_set was not valid.” 这个可能性，
+那么问题原因定位到 socket(fd) 错误上，bad socket。
+
+我们自己的程序没有修改socket(fd)，更没有关闭连接，这迫使我们进入curl库内部，
+
+我们尝试过，直接用ip代替url，是可以正常工作的。
+可是用 url ，CURL库内部的dns解析也是正确的，可以正常解析出 url对应的ip，
+值得指出的是，CURL库解析DNS是异步方式的，它会新建一个线程去单独做这个解析工作。
+问题会出在哪里呢？？？
+
+经过大半天的跟踪debug，发现curl库两次调用了socket函数返回sockfd，也就是说它建立了两个不同的sockfd，
+而我们的程序在 sock_cb 中只有一次赋值，因为我们想当然的认为 curl 只为每一个任务建立一个连接（只有一个sockfd），
+
+CURL为什么会两次建立socket呢？
+
+了解到，CURL第一个调用 curl_multi_socket_action， 就会建立一个socket(fd)，然后调用 sock_cb 通知我们写的接口程序，
+这样外部程序就可以做select调度。这个socket(fd)并没有做连接工作，但是外面的select调度却可以捕捉到该sockfd的事件，
+这是最令人迷惑的地方，外部以为这个sockfd是正常的（实际上是不正常的）。
+下次外部再次（或再几次）调用 curl_multi_socket_action 的时候，curl内部又建立一个socket，这个socket才是真正做我们的事情，
+连接、发送、接收数据。
+
+可是这个socket(fd)我们外部程序并没有捕捉到，还是用原有的那个socket(fd)做select，结果就出现 10038 错误。
+
+我们把curl后来建立的那个socket(fd)再次与CURLWork绑定，给select做调度，解决问题。
+
+中间还有一个小插曲，再次绑定后并没有立刻解决问题，后来找到原因，我们的CURLWork与socket(fd)绑定的时候，
+是通过一个map<sockfd,CURLWork*>给select的，原来的那个socket(fd)继续在map表里。
+
+
+
+回过头来看看，正是因为curl的dns解析是异步的，如果解析过程非常快，那么它一开始调用sock_cb函数通知外部程序的时候，
+那个socket(fd)就是第二个建立好的socket，如果解析过程慢了，它内部会返回一个临时的socket(fd)，
+等待第二次调用 curl_multi_socket_action，我们的问题正是由于dns解析慢了，curl返回了一个临时的socket(fd)给外部做select，
+等它真正建立好socket的时候，我们却没有及时跟新select fdset里面的那个socket(fd)，从而导致问题的出现。
+
+
+
+
+

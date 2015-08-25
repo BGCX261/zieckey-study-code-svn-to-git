@@ -1,0 +1,9 @@
+svn usage:
+
+Make it auto change the versions
+
+svn propset svn:keywords "Id Revision Date" svn_usage.txt 
+
+/**
+ * @version $Id: svn_usage.txt 486 2012-04-11 07:50:27Z zieckey $
+ */
